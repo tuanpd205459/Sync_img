@@ -3,10 +3,10 @@ clc; clear; close all;
 %% =========================================================================
 %  1. CẤU HÌNH THAM SỐ TỔNG (PARAMETERS CONFIGURATION)
 % =========================================================================
-cfg.defaultFolder = 'D:\tuan\sync_img_github\Sync_img\data_14_4_2026\mau2_30x\sau_lam_sach_Copy';
+cfg.defaultFolder = 'C:\Users\admin\Máy tính\sync_img_github\Sync_img\data_14_4_2026\mau2_30x\sau_lam_sach_Copy';
 % Tham số Tiền xử lý & Nhị phân
 cfg.gaussSigma       = 1;     % Độ làm mượt ảnh
-cfg.sensCoef         = 0.6;   % Hệ số nhạy adaptive threshold
+cfg.sensCoef         = 0.65;   % Hệ số nhạy adaptive threshold
 cfg.neighborhoodSize = 51;    % Kích thước vùng lân cận (phải là số lẻ)
 % Tham số Skeleton & Làm sạch
 cfg.minBranchLen1    = 8;     % Xóa nhánh cụt (bước 1)
@@ -27,7 +27,7 @@ cfg.connectParams = [
 % Tham số nối biên & Crop
 cfg.borderMargin     = 30;
 cfg.borderExtLen     = 30;
-cfg.cropOffset       = 15;
+cfg.cropOffset       = 5;
 cfg.finalOffset      = 7;
 
 %% =========================================================================
@@ -50,6 +50,7 @@ fprintf('Đã chọn %d file data để xử lý.\n', numFiles);
 % Biến cờ để lưu tọa độ Crop của ảnh đầu tiên
 savedCrop = false; 
 fourierCoords = []; % <--- Thêm dòng này để chuẩn bị lưu tọa độ phổ
+
 %% BẮT ĐẦU VÒNG LẶP CHO TỪNG FILE
 for imgIdx = 1:numFiles
     imgPath = fullfile(folderPath, filenames{imgIdx});
@@ -62,15 +63,39 @@ for imgIdx = 1:numFiles
         hologram_original = rgb2gray(hologram_original);
     end
     hologram_original = rot90(hologram_original, 1);
-    hologram = hologram_original;
-    
-    % Lọc nhiễu và cân bằng sáng
-    hologram = imgaussfilt(hologram, cfg.gaussSigma);
-    hologram = adapthisteq(hologram);
     
     %% =========================================================================
-    %  3. NHỊ PHÂN HÓA VÀ TRÍCH XUẤT XƯƠNG (BINARIZATION & SKELETONIZATION)
+    %  [MỚI] CẮT ẢNH NGAY TỪ BAN ĐẦU (CROP INITIALIZATION)
     % =========================================================================
+    % Nếu chưa có tọa độ (ảnh đầu tiên), yêu cầu người dùng vẽ
+    if ~savedCrop
+        disp('Vui lòng chọn vùng ảnh trên cửa sổ (Draw Rectangle)...');
+        figCrop = figure; 
+        imshow(hologram_original, []); 
+        title('Vẽ khung chữ nhật để chọn vùng crop (Áp dụng cho toàn bộ file sau)');
+        
+        [~, xRec, yRec, widthRec, heightRec] = myDrawRec();
+        
+        % Kiểm tra nếu cửa sổ vẫn còn mở thì mới đóng
+        if ishandle(figCrop)
+            close(figCrop);
+        end
+        savedCrop = true; % Bật cờ để các ảnh sau không cần vẽ lại
+    else
+        disp('Đang tự động áp dụng khung cắt đã chọn từ ảnh đầu tiên...');
+    end
+    
+    % Cắt trực tiếp trên ảnh gốc
+    hologram_original = hologram_original(yRec : yRec + heightRec - 1, xRec : xRec + widthRec - 1);
+    hologram = hologram_original;
+    
+    %% =========================================================================
+    %  3. TIỀN XỬ LÝ, NHỊ PHÂN HÓA VÀ TRÍCH XUẤT XƯƠNG
+    % =========================================================================
+    % Lọc nhiễu và cân bằng sáng (trên ảnh đã crop)
+    hologram = imgaussfilt(hologram, cfg.gaussSigma);
+    hologram = adapthisteq(hologram);
+
     disp('Đang thực hiện Binarize và Skeletonize...');
     T = adaptthresh(hologram, cfg.sensCoef, 'NeighborhoodSize', [cfg.neighborhoodSize cfg.neighborhoodSize], 'Statistic', 'median');
     BW = imbinarize(hologram, T);
@@ -109,12 +134,10 @@ for imgIdx = 1:numFiles
     BW = bwmorph(BW, "bridge", Inf);
     BW = bwmorph(BW, "diag", Inf);
     BW = bwmorph(BW, "skeleton", Inf);
-    BW = bwmorph(BW, 'spur', 5);
+    BW = bwmorph(BW, 'spur', 2);
     numIterations = size(cfg.connectParams, 1);
     
     for count = 1:numIterations
-        % fprintf('--> Đang chạy vòng nối thứ %d/%d\n', count, numIterations);
-        
         endPoints = bwmorph(BW, 'endpoints');
         vectors = fitEndpointVectors(BW, endPoints, 20); % Dùng 20 pixel fit PCA
         
@@ -133,52 +156,39 @@ for imgIdx = 1:numFiles
     BW = extendLineNearBorder(BW, vectors, cfg.borderExtLen, cfg.borderMargin);
     
     %% =========================================================================
-    %  5. CẮT VÙNG ẢNH VÀ HIỂN THỊ KẾT QUẢ (CROPPING)
+    %  5. HIỂN THỊ KẾT QUẢ VÀ ÁP DỤNG OFFSET CẠNH CHỐNG NHIỄU BIÊN
     % =========================================================================
-    % Nếu chưa có tọa độ (ảnh đầu tiên), yêu cầu người dùng vẽ
-    if ~savedCrop
-        disp('Vui lòng chọn vùng ảnh trên cửa sổ (Draw Rectangle)...');
-        % Mở ảnh gốc lên để lấy khung vẽ cho trực quan
-        figCrop = figure; imshow(hologram_original, []); title('Vẽ khung chữ nhật để chọn vùng crop (Áp dụng cho toàn bộ file sau)');
-        [~, xRec, yRec, widthRec, heightRec] = myDrawRec();
-%      % Kiểm tra nếu cửa sổ vẫn còn mở thì mới đóng
-        if ishandle(figCrop)
-            close(figCrop);
-        end
-        savedCrop = true; % Bật cờ để các ảnh sau không cần vẽ lại
-    else
-        disp('Đang tự động áp dụng khung cắt đã chọn từ ảnh đầu tiên...');
-    end
-    
-    % Tiến hành cắt ảnh
-    BW = BW(yRec : yRec + heightRec - 1, xRec : xRec + widthRec - 1);
-    
-    % % Hiển thị vùng BW sau khi cắt
-    % figure; 
-    % imshow(BW, []); 
-    % title(sprintf('BW sau khi cắt - File %d', imgIdx));
-    % 
-    BW = bwskel(BW, 'MinBranchLength', 20);
-    
-    % Áp dụng Offset cạnh
+    % Hiển thị vùng BW 
+    figure;
+    imshow(BW, []);
+    title(sprintf('BW sau khi xử lý - File %d', imgIdx));
+
+    %%
+    % 1. Tìm và tách các branch points ra khỏi skeleton
+    BP = bwmorph(BW, 'branchpoints');
+    BP = imdilate(BP, strel('disk', 2));
+
+    BW = BW & ~BP;
+    % 2. Giữ lại các nhánh có chiều dài >= 20 pixel (thay thế hoàn toàn CC và vòng lặp for)
+    BW = bwareaopen(BW, 20);
+    BP = bwmorph(BW, 'branchpoints');
+    BW = BW & ~BP;
+ 
+
+    % Áp dụng Offset cạnh (Bỏ phần viền sát mép sau khi xử lý để tránh artifacts)
     BW = BW(cfg.cropOffset : end - cfg.cropOffset + 1, cfg.cropOffset : end - cfg.cropOffset + 1);
-    hologram = hologram(yRec : yRec + heightRec - 1, xRec : xRec + widthRec - 1); % Cắt hologram trước
-    % hologram = hologram(cfg.cropOffset : end - cfg.cropOffset + 1, cfg.cropOffset : end - cfg.cropOffset + 1);
     
     %% =========================================================================
     %  6. TÁI TẠO VÀ UNWRAP PHASE (PHASE RECONSTRUCTION)
     % =========================================================================
     disp('Đang tái tạo pha...');
-    [~, labels, hologram] = assign_fringe_order(BW, true);
+    [~, labels, hologram] = assign_fringe_order_v5(BW, true);
     [phi_est, ~] = reconSurface_linearPushed(hologram, labels, 632.8e-9, 'None', false);
     
     % Cắt biên cho phi_est
     phi_est = phi_est(5:end-5, 5:end-5);
     phi_est = phi_est - min(phi_est(:));
     
-    % Tái tạo pha tương tác (Lưu ý: Nếu hàm này yêu cầu người dùng click, 
-    % nó sẽ dừng ở mỗi vòng lặp để đợi bạn thao tác)
-%     wrapped_phase = reconstruct_phase_interactively(hologram);
     % Tái tạo pha: Chỉ yêu cầu chọn phổ ở file đầu tiên, các file sau tự động cắt
     [wrapped_phase, fourierCoords] = reconstruct_phase_interactively_v2(hologram, fourierCoords);
 
@@ -197,13 +207,42 @@ for imgIdx = 1:numFiles
     title(sprintf('Ảnh Final Unwrapped Phase - File %d', imgIdx)); colormap jet;
     
     disp(['Hoàn thành trích xuất pha cho ảnh: ', filenames{imgIdx}]);
+
+    %% LOẠI BỎ PHA NGHIÊNG (TILT REMOVAL) BẰNG LEAST SQUARES
+    % ========================================================
+    [M, N] = size(finalUnwrappedPhase);
+    [X, Y] = meshgrid(1:N, 1:M);
     
-    % (Tuỳ chọn) Tự động lưu file kết quả ở đây
-    % saveName = fullfile(folderPath, sprintf('Result_%d.mat', imgIdx));
-    % save(saveName, 'finalUnwrappedPhase');
+    % Dàn phẳng ma trận thành vector để tính toán
+    x_col = X(:);
+    y_col = Y(:);
+    z_col = finalUnwrappedPhase(:);
+    
+    % Lọc các điểm hợp lệ (Phòng trường hợp ảnh có mask nền chứa NaN/Inf)
+    valid_idx = ~isnan(z_col) & ~isinf(z_col);
+    
+    % Lập ma trận thiết kế cho hệ phương trình mặt phẳng: Z = a*X + b*Y + c
+    A = [x_col(valid_idx), y_col(valid_idx), ones(sum(valid_idx), 1)];
+    
+    % Giải nghiệm hệ số [a; b; c] bằng ma trận giả nghịch đảo
+    coeffs = A \ z_col(valid_idx); 
+    
+    % Tái tạo lại mặt phẳng pha nghiêng (Tilt plane)
+    tilt_plane = coeffs(1)*X + coeffs(2)*Y + coeffs(3);
+    
+    % Trừ đi pha nghiêng khỏi pha gốc
+    phase_no_tilt = finalUnwrappedPhase - tilt_plane;
+    
+    % Hiển thị kết quả sau khi san phẳng
+    figure; surf(phase_no_tilt, "EdgeColor", "none"); 
+    title(sprintf('Ảnh sau khi loại bỏ Tilt - File %d', imgIdx)); 
+    colormap jet;
+    % ========================================================
 end
 
 disp('==== ĐÃ XỬ LÝ XONG TOÀN BỘ DATA ====');
+
+
 
 
 
@@ -399,229 +438,7 @@ end
 %%
 
 %% ========== Hàm chính ==========
-function [BW_out, connections] = extend_and_connect(BW, endpoints, vectors, maxLen, step, connectThresh)
-% EXTEND_AND_CONNECT 
-%   Extend rays from endpoints along vectors, then connect endpoints 
-%   whose rays meet or get close.
-%
-% INPUT:
-%   BW         - ảnh nhị phân ban đầu
-%   endpoints  - Nx2 [x y]
-%   vectors    - Nx2 hướng tương ứng
-%   maxLen     - chiều dài mở rộng
-%   step       - bước nội suy
-%   connectThresh - ngưỡng để nối (pixel)
-%
-% OUTPUT:
-%   BW_out     - ảnh sau khi nối
-%   connections - cell M×2 chứa cặp điểm được nối
 
-    assert(size(endpoints,2)==2, 'endpoints must be Nx2 [x y]');
-    assert(size(vectors,1)==size(endpoints,1), 'vectors must match endpoints count');
-
-    [H,W] = size(BW);
-    N = size(endpoints,1);
-
-    rays = cell(N,1);
-
-    % ---- 1) TẠO CÁC RAY DỌC THEO VECTOR ----
-    for i = 1:N
-        p0 = endpoints(i,:);        % 1×2
-        v  = vectors(i,:);          % 1×2
-
-        if all(v == 0)
-            rays{i} = p0;
-            continue;
-        end
-
-        vn = v / norm(v);           % chuẩn hóa 1×2
-        ts = (0:step:maxLen)';      % L×1
-
-        % Tạo L×2 bằng nhân ma trận: ts*(1×2) hợp lệ → (L×2)
-        pts = ts * vn + p0;         % L×2
-
-        % Giữ điểm trong ảnh
-        valid = pts(:,1)>=1 & pts(:,1)<=W & pts(:,2)>=1 & pts(:,2)<=H;
-        pts = round(pts(valid,:));
-
-        % tránh trùng pixel
-        pts = unique(pts,'rows','stable');
-
-        rays{i} = pts;
-    end
-
-    % ---- 2) TÌM CẶP RAY NÀO GẦN NHAU ----
-    connections = {};
-    for i = 1:N-1
-        Pi = double(rays{i});
-        if isempty(Pi), continue; end
-
-        for j = i+1 : N
-            Pj = double(rays{j});
-            if isempty(Pj), continue; end
-
-            % Tính khoảng cách qua pdist2
-            D = pdist2(Pi, Pj);
-            [dmin, idx] = min(D(:));
-
-            if dmin <= connectThresh
-                [ia, jb] = ind2sub(size(D), idx);
-
-                p_closest = Pi(ia,:);
-                q_closest = Pj(jb,:);
-
-                connections(end+1,1:2) = {p_closest, q_closest};
-            end
-        end
-    end
-
-    % ---- 3) VẼ ĐƯỜNG NỐI TRÊN ẢNH ----
-    BW_out = BW;
-    for k=1:size(connections,1)
-        BW_out = drawLineBW(BW_out, connections{k,1}, connections{k,2});
-    end
-end
-
-function [BW_new, connections] = connect_intersecting_ridges(BW, endpoints, vectors, maxLen)
-    BW_new = BW;
-    connections = [];
-    
-    if isempty(endpoints), return; end
-    num_pts = size(endpoints, 1);
-    
-    % 1. Định danh vùng liên thông
-    [L, ~] = bwlabel(BW);
-    ind = sub2ind(size(BW), round(endpoints(:,2)), round(endpoints(:,1)));
-    pt_labels = L(ind);
-
-    % Chuẩn hóa vector
-    norms = sqrt(sum(vectors.^2, 2));
-    valid = norms > 0;
-    vectors(valid, :) = bsxfun(@rdivide, vectors(valid, :), norms(valid));
-    vectors(~valid, :) = 0;
-
-    scale_factor = maxLen * 1.5; 
-
-    for i = 1:num_pts
-        for j = i+1:num_pts
-            
-            % Nếu cùng thuộc 1 vân thì bỏ qua
-            if pt_labels(i) == pt_labels(j) && pt_labels(i) > 0
-                continue;
-            end
-
-            P1 = endpoints(i, :);
-            P2 = endpoints(j, :);
-            
-            % Bỏ qua nếu 2 đầu mút quá xa nhau (Filter sơ bộ)
-            if norm(P1 - P2) > maxLen * 2
-                continue;
-            end
-
-            V1 = vectors(i, :);
-            V2 = vectors(j, :);
-            
-            P1_end = P1 + V1 * scale_factor;
-            P2_end = P2 + V2 * scale_factor;
-            
-            connected = false;
-
-            % --- TRƯỜNG HỢP 1: Hai tia cắt nhau hình học (Giao thoa giữa hư không) ---
-            is_cut = segments_intersect(P1, P1_end, P2, P2_end);
-            if is_cut
-                 if norm(P1 - P2) < maxLen * 1.5
-                    [BW_new, ~] = drawLine(BW_new, P1(1), P1(2), P2(1), P2(2));
-                    connections = [connections; P1, P2];
-                    connected = true;
-                 end
-            end
-            
-            % --- TRƯỜNG HỢP 2: Ray Casting (Bắn tia tìm vùng) ---
-            % Logic mới: Điểm trúng (Hit Point) phải gần endpoint đích
-            
-            % Kiểm tra tia P1 -> bắn về phía P2 (nhưng trúng vùng chứa P2)
-            if ~connected
-                hit_point_1 = trace_ray_to_component(P1, P1_end, L, pt_labels(j));
-                
-                if ~isempty(hit_point_1)
-                     dist_gap = norm(P1 - hit_point_1);      % Độ dài đoạn nối
-                     dist_to_tip = norm(hit_point_1 - P2);   % Độ lệch so với endpoint đích
-
-                     % ĐIỀU KIỆN QUAN TRỌNG MỚI THÊM:
-                     % dist_to_tip < maxLen: Nghĩa là điểm va chạm không được nằm quá xa đầu mút P2
-                     % Tránh việc P1 đâm vào "bụng" của vân chứa P2
-                     if dist_gap < maxLen * 1.5 && dist_to_tip < maxLen 
-                        [BW_new, ~] = drawLine(BW_new, P1(1), P1(2), hit_point_1(1), hit_point_1(2));
-                        connections = [connections; P1, hit_point_1];
-                        connected = true;
-                     end
-                end
-            end
-
-            % Kiểm tra tia P2 -> bắn về phía P1
-            if ~connected
-                hit_point_2 = trace_ray_to_component(P2, P2_end, L, pt_labels(i));
-                
-                if ~isempty(hit_point_2)
-                     dist_gap = norm(P2 - hit_point_2);
-                     dist_to_tip = norm(hit_point_2 - P1); % So với đầu mút P1
-
-                     if dist_gap < maxLen * 1.5 && dist_to_tip < maxLen
-                        [BW_new, ~] = drawLine(BW_new, P2(1), P2(2), hit_point_2(1), hit_point_2(2));
-                        connections = [connections; P2, hit_point_2];
-                     end
-                end
-            end
-            
-        end
-    end
-
-    if size(BW_new, 3) > 1
-        BW_new = imbinarize(rgb2gray(BW_new));
-    end
-end
-
-% --- Giữ nguyên hàm phụ trợ ---
-function hit_point = trace_ray_to_component(P_start, P_end, LabelMatrix, target_label)
-    hit_point = [];
-    if target_label == 0, return; end
-
-    dist = norm(P_end - P_start);
-    num_steps = ceil(dist);
-    
-    x_vals = linspace(P_start(1), P_end(1), num_steps);
-    y_vals = linspace(P_start(2), P_end(2), num_steps);
-    
-    [H, W] = size(LabelMatrix);
-    start_offset = 3; 
-    
-    for k = start_offset:num_steps
-        cx = round(x_vals(k));
-        cy = round(y_vals(k));
-        
-        if cx < 1 || cx > W || cy < 1 || cy > H, break; end
-        
-        pixel_label = LabelMatrix(cy, cx);
-        
-        if pixel_label == target_label
-            hit_point = [cx, cy];
-            return;
-        elseif pixel_label > 0 && pixel_label ~= target_label
-            return; 
-        end
-    end
-end
-
-% Hàm kiểm tra cắt nhau
-function res = segments_intersect(p1, p2, p3, p4)
-    d1 = ccw(p3, p4, p1); d2 = ccw(p3, p4, p2);
-    d3 = ccw(p1, p2, p3); d4 = ccw(p1, p2, p4);
-    res = ((d1 * d2) < 0) && ((d3 * d4) < 0);
-end
-function val = ccw(a, b, c)
-    val = (b(1) - a(1)) * (c(2) - a(2)) - (b(2) - a(2)) * (c(1) - a(1));
-end
-% --- Hàm phụ trợ: Bắn tia tìm vùng liên thông đích ---
 
 function BW_out = extendLineNearBorder(BW, vectors, extendLen, margin)
 % extendLineNearBorder - Nối dài endpoint ra ngoài NẾU nó gần biên ảnh
@@ -1412,87 +1229,6 @@ end
     end
 end
 
-
-
-function dst = zhang_suen_thinning(src)
-    % Chuyển đổi ảnh đầu vào về dạng logic (0 và 1) để tính toán nhanh hơn
-    if isinteger(src) || max(src(:)) > 1
-        dst = src > 0; 
-    else
-        dst = src;
-    end
-    
-    prev = false(size(dst));
-    
-    while true
-        dst = thinningIteration(dst, 0);
-        dst = thinningIteration(dst, 1);
-        
-        % Tính sự khác biệt để dừng vòng lặp
-        diff = abs(dst - prev);
-        if sum(diff(:)) == 0
-            break;
-        end
-        prev = dst;
-    end
-    
-    % Trả về ảnh có giá trị 0 và 255 giống như bản gốc Python
-    dst = uint8(dst) * 255;
-end
-
-% --- Hàm con (Sub-function) tính toán 1 lần lặp ---
-function I = thinningIteration(I, iter)
-    [rows, cols] = size(I);
-    M = false(rows, cols); % Ma trận M đánh dấu các pixel cần gọt bỏ
-    
-    % Quét qua các pixel (bỏ qua viền ngoài cùng để tránh lỗi index)
-    for i = 2:rows-1
-        for j = 2:cols-1
-            % Bỏ qua nếu pixel hiện tại là nền (0)
-            if I(i, j) == 0
-                continue;
-            end
-            
-            % Lấy giá trị 8 pixel lân cận (p2 đến p9 theo chiều kim đồng hồ)
-            p2 = I(i-1, j);
-            p3 = I(i-1, j+1);
-            p4 = I(i, j+1);
-            p5 = I(i+1, j+1);
-            p6 = I(i+1, j);
-            p7 = I(i+1, j-1);
-            p8 = I(i, j-1);
-            p9 = I(i-1, j-1);
-            
-            % A: Đếm số lần chuyển trạng thái từ 0 -> 1 trong chuỗi p2->p9->p2
-            A = (p2 == 0 && p3 == 1) + (p3 == 0 && p4 == 1) + ...
-                (p4 == 0 && p5 == 1) + (p5 == 0 && p6 == 1) + ...
-                (p6 == 0 && p7 == 1) + (p7 == 0 && p8 == 1) + ...
-                (p8 == 0 && p9 == 1) + (p9 == 0 && p2 == 1);
-            
-            % B: Tổng số pixel lân cận có giá trị 1
-            B = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
-            
-            % Điều kiện m1, m2 thay đổi tùy theo sub-iteration (0 hoặc 1)
-            if iter == 0
-                m1 = p2 * p4 * p6;
-                m2 = p4 * p6 * p8;
-            else
-                m1 = p2 * p4 * p8;
-                m2 = p2 * p6 * p8;
-            end
-            
-            % Đánh dấu xóa pixel nếu thỏa mãn tất cả điều kiện
-            if A == 1 && B >= 2 && B <= 6 && m1 == 0 && m2 == 0
-                M(i, j) = true;
-            end
-        end
-    end
-    
-    % Cập nhật ảnh: Giữ lại ảnh I ban đầu VÀ KHÔNG nằm trong ma trận xóa M
-    I = I & ~M;
-end
-
-
 function [wrappedPhase, fourierCoords] = reconstruct_phase_interactively_v2(hologram, fourierCoords)
 % RECONSTRUCT_PHASE_INTERACTIVELY Tái tạo pha từ hologram bằng cách
 % dùng MẶT NẠ để lọc phổ bậc +1. Tự động áp dụng nếu đã có tọa độ.
@@ -1547,4 +1283,882 @@ complexField = ifft2(ifftshift(filteredSpectrum));
 
 % 8. Lấy pha từ trường phức.
 wrappedPhase = angle(complexField);
+end
+
+function [fringe_order, fringe_labels, processed_image] = assign_fringe_order_v2(input_image, display_result)
+% ASSIGN_FRINGE_ORDER_V3
+% Gán nhãn bậc vân bằng pixel propagation + component median
+%
+% Ý tưởng:
+% 1. Tìm connected components
+% 2. Chọn component gần tâm nhất làm gốc -> label = 1
+% 3. Lan truyền nhãn theo pixel:
+%       quét lên: +1
+%       quét xuống: -1
+% 4. Khi toàn bộ pixel đã có nhãn:
+%       mỗi component lấy median label
+% 5. Chuẩn hóa nhãn từ 1..N
+%
+% INPUT:
+%   input_image     : ảnh nhị phân
+%   display_result  : true / false
+%
+% OUTPUT:
+%   fringe_order
+%   fringe_labels
+%   processed_image
+
+%% -------------------------
+% Input
+%% -------------------------
+if nargin < 1
+    error('Thiếu input_image');
+end
+
+if nargin < 2
+    display_result = true;
+end
+
+if isempty(input_image)
+    error('Ảnh rỗng');
+end
+
+if ~islogical(input_image)
+    input_image = logical(input_image);
+end
+
+processed_image = input_image;
+bw = processed_image;
+
+[H,W] = size(bw);
+
+%% -------------------------
+% Connected Components
+%% -------------------------
+cc = bwconncomp(bw,8);
+
+if cc.NumObjects == 0
+    fringe_order  = 0;
+    fringe_labels = [];
+    return;
+end
+
+N = cc.NumObjects;
+
+L = labelmatrix(cc);
+stats = regionprops(cc,'PixelList');
+
+%% -------------------------
+% Tìm component gần tâm nhất
+%% -------------------------
+center = [W/2 , H/2];
+
+mind = inf(N,1);
+
+for k = 1:N
+
+    pts = stats(k).PixelList;   % [x y]
+
+    d = sqrt((pts(:,1)-center(1)).^2 + ...
+             (pts(:,2)-center(2)).^2);
+
+    mind(k) = min(d);
+end
+
+[~, root_gid] = min(mind);
+
+%% -------------------------
+% Pixel label map
+%% -------------------------
+pixel_label = nan(H,W);
+
+%% -------------------------
+% Gán root = 1
+%% -------------------------
+root_pix = cc.PixelIdxList{root_gid};
+pixel_label(root_pix) = 1;
+
+queue_r = [];
+queue_c = [];
+
+[r0,c0] = ind2sub([H,W], root_pix);
+
+queue_r = r0(:);
+queue_c = c0(:);
+
+head = 1;
+
+%% -------------------------
+% BFS pixel propagation
+%% -------------------------
+while head <= numel(queue_r)
+
+    r = queue_r(head);
+    c = queue_c(head);
+    head = head + 1;
+
+    current_label = pixel_label(r,c);
+
+    %% ===== Quét lên =====
+    for y = r-1:-1:1
+
+        if bw(y,c)
+
+            if isnan(pixel_label(y,c))
+                pixel_label(y,c) = current_label + 1;
+
+                queue_r(end+1,1) = y;
+                queue_c(end+1,1) = c;
+            end
+
+            break;
+        end
+    end
+
+    %% ===== Quét xuống =====
+    for y = r+1:H
+
+        if bw(y,c)
+
+            if isnan(pixel_label(y,c))
+                pixel_label(y,c) = current_label - 1;
+
+                queue_r(end+1,1) = y;
+                queue_c(end+1,1) = c;
+            end
+
+            break;
+        end
+    end
+
+end
+
+%% -------------------------
+% Nếu còn pixel chưa label
+% lặp bổ sung
+%% -------------------------
+changed = true;
+
+while changed
+
+    changed = false;
+
+    [rr,ccol] = find(bw & isnan(pixel_label));
+
+    for p = 1:length(rr)
+
+        r = rr(p);
+        c = ccol(p);
+
+        best_dist  = inf;
+        best_label = nan;
+
+        %% quét lên
+        for y = r-1:-1:1
+
+            if bw(y,c) && ~isnan(pixel_label(y,c))
+
+                d = r-y;
+
+                if d < best_dist
+                    best_dist  = d;
+                    best_label = pixel_label(y,c) + 1;
+                end
+                break;
+            end
+        end
+
+        %% quét xuống
+        for y = r+1:H
+
+            if bw(y,c) && ~isnan(pixel_label(y,c))
+
+                d = y-r;
+
+                if d < best_dist
+                    best_dist  = d;
+                    best_label = pixel_label(y,c) - 1;
+                end
+                break;
+            end
+        end
+
+        if ~isnan(best_label)
+            pixel_label(r,c) = best_label;
+            changed = true;
+        end
+
+    end
+end
+
+%% -------------------------
+% Tính label cho từng component = median
+%% -------------------------
+fringe_labels = nan(N,1);
+
+for k = 1:N
+
+    pix = cc.PixelIdxList{k};
+
+    vals = pixel_label(pix);
+    vals = vals(~isnan(vals));
+
+    if isempty(vals)
+        fringe_labels(k) = 1;
+    else
+        fringe_labels(k) = round(median(vals));
+    end
+end
+
+%% -------------------------
+% Chuẩn hóa nhãn từ 1
+%% -------------------------
+min_label = min(fringe_labels);
+fringe_labels = fringe_labels - min_label + 1;
+
+%% -------------------------
+% Số fringe thực tế
+%% -------------------------
+fringe_order = max(fringe_labels);
+
+%% -------------------------
+% Display
+%% -------------------------
+if display_result
+
+    figure('Name','Assigned Fringe Order V3',...
+           'NumberTitle','off');
+
+    imshow(bw);
+    hold on;
+
+    for k = 1:N
+
+        pts = stats(k).PixelList;
+
+        d = sqrt((pts(:,1)-center(1)).^2 + ...
+                 (pts(:,2)-center(2)).^2);
+
+        [~,id] = min(d);
+        pos = pts(id,:);
+
+        text(pos(1),pos(2),num2str(fringe_labels(k)),...
+            'Color','r',...
+            'FontSize',11,...
+            'FontWeight','bold',...
+            'HorizontalAlignment','center');
+    end
+
+    title('Fringe Labels V3');
+    hold off;
+end
+
+end
+
+
+function [fringe_order, fringe_labels, processed_image] = assign_fringe_order_v4(input_image, display_result)
+% ASSIGN_FRINGE_ORDER_V4
+% Component-wise propagation:
+% 1) Chọn fringe gốc gần tâm -> label = 1
+% 2) Xử lý theo connected component:
+%    - Quét toàn bộ pixel của component hiện tại theo cột
+%    - Thu thập vote label cho các component chưa biết:
+%         phía trên  -> current + 1
+%         phía dưới  -> current - 1
+%    - Sau khi quét HẾT component hiện tại:
+%         mỗi component đích nhận median(votes)
+%         gán thống nhất 1 label cho toàn bộ component đó
+%    - Component mới gán đưa vào queue
+% 3) Nếu còn component chưa gán:
+%    fallback tìm theo cột từ component đã biết gần nhất
+% 4) Chuẩn hóa label từ 1..K
+
+%% -------------------------
+% Input
+%% -------------------------
+if nargin < 1
+    error('Thiếu input_image');
+end
+
+if nargin < 2
+    display_result = true;
+end
+
+if isempty(input_image)
+    error('Ảnh rỗng');
+end
+
+if ~islogical(input_image)
+    input_image = logical(input_image);
+end
+
+processed_image = input_image;
+bw = processed_image;
+
+[H,W] = size(bw);
+
+%% -------------------------
+% Connected Components
+%% -------------------------
+cc = bwconncomp(bw,8);
+
+if cc.NumObjects == 0
+    fringe_order = 0;
+    fringe_labels = [];
+    return;
+end
+
+N = cc.NumObjects;
+L = labelmatrix(cc);
+stats = regionprops(cc,'PixelList');
+
+%% -------------------------
+% Chọn root gần tâm
+%% -------------------------
+center = [W/2 , H/2];
+mind = inf(N,1);
+
+for k = 1:N
+    pts = stats(k).PixelList;
+    d = hypot(pts(:,1)-center(1), pts(:,2)-center(2));
+    mind(k) = min(d);
+end
+
+[~, root_gid] = min(mind);
+
+%% -------------------------
+% Khởi tạo
+%% -------------------------
+fringe_labels = nan(N,1);
+fringe_labels(root_gid) = 1;
+
+queue = root_gid;
+head = 1;
+
+%% -------------------------
+% BFS theo component
+%% -------------------------
+while head <= numel(queue)
+
+    current_gid = queue(head);
+    head = head + 1;
+
+    current_label = fringe_labels(current_gid);
+    pts = stats(current_gid).PixelList;   % [x y]
+
+    % vote labels cho component khác
+    votes = cell(N,1);
+
+    % --------------------------------
+    % Quét HẾT component hiện tại trước
+    % --------------------------------
+    for i = 1:size(pts,1)
+
+        c = pts(i,1);
+        r = pts(i,2);
+
+        %% ===== Quét lên =====
+        for y = r-1:-1:1
+
+            if bw(y,c)
+
+                gid2 = L(y,c);
+
+                if gid2 ~= current_gid
+
+                    if isnan(fringe_labels(gid2))
+                        votes{gid2}(end+1) = current_label + 1;
+                    end
+
+                    break;
+                end
+            end
+        end
+
+        %% ===== Quét xuống =====
+        for y = r+1:H
+
+            if bw(y,c)
+
+                gid2 = L(y,c);
+
+                if gid2 ~= current_gid
+
+                    if isnan(fringe_labels(gid2))
+                        votes{gid2}(end+1) = current_label - 1;
+                    end
+
+                    break;
+                end
+            end
+        end
+
+    end
+
+    % --------------------------------
+    % Sau khi quét xong -> thống nhất label
+    % --------------------------------
+    for gid2 = 1:N
+
+        if isnan(fringe_labels(gid2)) && ~isempty(votes{gid2})
+
+            fringe_labels(gid2) = round(median(votes{gid2}));
+            queue(end+1) = gid2;
+
+        end
+    end
+
+end
+
+%% -------------------------
+% Fallback cho component còn thiếu
+%% -------------------------
+missing = find(isnan(fringe_labels));
+
+while ~isempty(missing)
+
+    changed = false;
+
+    for t = 1:length(missing)
+
+        k = missing(t);
+        pts = stats(k).PixelList;
+
+        cand = [];
+
+        for i = 1:size(pts,1)
+
+            c = pts(i,1);
+            r = pts(i,2);
+
+            %% lên
+            for y = r-1:-1:1
+                gid2 = L(y,c);
+
+                if gid2 > 0 && gid2 ~= k && ~isnan(fringe_labels(gid2))
+                    cand(end+1) = fringe_labels(gid2) + 1;
+                    break;
+                end
+            end
+
+            %% xuống
+            for y = r+1:H
+                gid2 = L(y,c);
+
+                if gid2 > 0 && gid2 ~= k && ~isnan(fringe_labels(gid2))
+                    cand(end+1) = fringe_labels(gid2) - 1;
+                    break;
+                end
+            end
+
+        end
+
+        if ~isempty(cand)
+            fringe_labels(k) = round(median(cand));
+            changed = true;
+        end
+
+    end
+
+    if ~changed
+        % nếu vẫn kẹt thì gán 1 để tránh loop vô hạn
+        fringe_labels(isnan(fringe_labels)) = 1;
+    end
+
+    missing = find(isnan(fringe_labels));
+
+end
+
+%% -------------------------
+% Chuẩn hóa nhãn
+%% -------------------------
+min_label = min(fringe_labels);
+fringe_labels = fringe_labels - min_label + 1;
+
+fringe_labels = round(fringe_labels);
+fringe_order = max(fringe_labels);
+
+%% -------------------------
+% Display
+%% -------------------------
+if display_result
+
+    figure('Name','Assigned Fringe Order V4', ...
+           'NumberTitle','off');
+
+    imshow(bw);
+    hold on;
+
+    for k = 1:N
+
+        pts = stats(k).PixelList;
+
+        d = hypot(pts(:,1)-center(1), pts(:,2)-center(2));
+        [~,id] = min(d);
+        pos = pts(id,:);
+
+        text(pos(1), pos(2), num2str(fringe_labels(k)), ...
+            'Color','r', ...
+            'FontSize',11, ...
+            'FontWeight','bold', ...
+            'HorizontalAlignment','center');
+    end
+
+    title('Fringe Labels V4');
+    hold off;
+end
+
+end
+
+function [fringe_order, fringe_labels, processed_image] = assign_fringe_order_v5(input_image, display_result)
+% ASSIGN_FRINGE_ORDER_V5
+%
+% Pixel proposal + finalize when connected-component is sufficiently covered
+%
+% Ý tưởng:
+% 1. Tách connected components
+% 2. Chọn fringe gần tâm làm root => label = 1
+% 3. Root quét dọc theo cột:
+%       pixel khác nhận proposal label
+% 4. Một component CHỈ finalize khi:
+%       số lượng pixel nhận được proposal đạt một ngưỡng nhất định (VD: >= 60%)
+% 5. Khi finalize:
+%       component_label = median(all valid proposals)
+%       component đó được đưa vào hàng đợi để tiếp tục lan truyền
+% 6. Lặp tới khi hàng đợi trống. Các component rác không tới được sẽ gán mặc định.
+
+%% -------------------------------------------------
+% Input
+%% -------------------------------------------------
+if nargin < 1
+    error('Thiếu input_image');
+end
+
+if nargin < 2
+    display_result = true;
+end
+
+if isempty(input_image)
+    error('Ảnh rỗng');
+end
+
+if ~islogical(input_image)
+    input_image = logical(input_image);
+end
+
+processed_image = input_image;
+bw = processed_image;
+
+[H,W] = size(bw);
+
+%% -------------------------------------------------
+% Connected components
+%% -------------------------------------------------
+cc = bwconncomp(bw,8);
+
+if cc.NumObjects == 0
+    fringe_order = 0;
+    fringe_labels = [];
+    return;
+end
+
+N = cc.NumObjects;
+
+L = labelmatrix(cc);
+stats = regionprops(cc,'PixelList');
+
+%% -------------------------------------------------
+% Root gần tâm
+%% -------------------------------------------------
+center = [W/2 , H/2];
+
+mind = inf(N,1);
+
+for k = 1:N
+    pts = stats(k).PixelList;
+    d = hypot(pts(:,1)-center(1), pts(:,2)-center(2));
+    mind(k) = min(d);
+end
+
+[~, root_gid] = min(mind);
+
+%% -------------------------------------------------
+% Khởi tạo
+%% -------------------------------------------------
+fringe_labels = nan(N,1);      % final label component
+proposal_map  = nan(H,W);      % proposal label per pixel
+
+% Tính sẵn số lượng pixel của mỗi component để xét điều kiện %
+num_pixels_per_comp = zeros(N,1);
+for k = 1:N
+    num_pixels_per_comp(k) = numel(cc.PixelIdxList{k});
+end
+
+% Root = 1
+fringe_labels(root_gid) = 1;
+
+root_pix = cc.PixelIdxList{root_gid};
+proposal_map(root_pix) = 1;
+
+queue = root_gid;
+head = 1;
+
+% Ngưỡng coverage (60%)
+COVERAGE_THRESHOLD = 0.6; 
+
+%% -------------------------------------------------
+% BFS propagation
+%% -------------------------------------------------
+while head <= numel(queue)
+
+    current_gid = queue(head);
+    head = head + 1;
+
+    current_label = fringe_labels(current_gid);
+    pts = stats(current_gid).PixelList;   % [x y]
+
+    %% ---------------------------------
+    % 1. Propagate proposal
+    %% ---------------------------------
+    for i = 1:size(pts,1)
+
+        c = pts(i,1);
+        r = pts(i,2);
+
+        %% ===== Quét lên =====
+        for y = r-1:-1:1
+            if bw(y,c)
+                gid2 = L(y,c);
+                if gid2 ~= current_gid
+                    if isnan(proposal_map(y,c))
+                        proposal_map(y,c) = current_label + 1;
+                    end
+                    break;
+                end
+            end
+        end
+
+        %% ===== Quét xuống =====
+        for y = r+1:H
+            if bw(y,c)
+                gid2 = L(y,c);
+                if gid2 ~= current_gid
+                    if isnan(proposal_map(y,c))
+                        proposal_map(y,c) = current_label - 1;
+                    end
+                    break;
+                end
+            end
+        end
+
+    end
+
+    %% ---------------------------------
+    % 2. Check component nào đủ % proposal
+    %% ---------------------------------
+    for gid = 1:N
+        if isnan(fringe_labels(gid))
+
+            pix = cc.PixelIdxList{gid};
+            vals = proposal_map(pix);
+            valid_vals = vals(~isnan(vals)); % Lọc bỏ các giá trị NaN
+
+            % Kiểm tra xem số pixel có proposal đã đạt ngưỡng chưa
+            if numel(valid_vals) >= ceil(num_pixels_per_comp(gid) * COVERAGE_THRESHOLD)
+                
+                % Đủ điều kiện => finalize
+                fringe_labels(gid) = round(median(valid_vals));
+                
+                % Đưa vào queue để nó tiếp tục lan truyền
+                queue(end+1) = gid; 
+            end
+        end
+    end
+
+end
+
+%% -------------------------------------------------
+% Fallback cho component bị cô lập
+%% -------------------------------------------------
+% Các component này có thể là nhiễu hoặc ở quá xa rìa, không nhận được proposal nào
+missing = isnan(fringe_labels);
+if any(missing)
+    % Gán tạm mức 1 hoặc có thể gán nan tùy ý đồ hiển thị của bạn
+    fringe_labels(missing) = 1; 
+end
+
+%% -------------------------------------------------
+% Normalize
+%% -------------------------------------------------
+min_label = min(fringe_labels);
+
+fringe_labels = fringe_labels - min_label + 1;
+fringe_labels = round(fringe_labels);
+
+fringe_order = max(fringe_labels);
+
+%% -------------------------------------------------
+% Display
+%% -------------------------------------------------
+if display_result
+
+    figure('Name','Assigned Fringe Order V5',...
+           'NumberTitle','off');
+
+    imshow(bw);
+    hold on;
+
+    for k = 1:N
+        pts = stats(k).PixelList;
+        d = hypot(pts(:,1)-center(1), pts(:,2)-center(2));
+
+        [~,id] = min(d);
+        pos = pts(id,:);
+
+        text(pos(1),pos(2),num2str(fringe_labels(k)),...
+            'Color','r',...
+            'FontSize',11,...
+            'FontWeight','bold',...
+            'HorizontalAlignment','center');
+    end
+
+    title('Fringe Labels V5 (Threshold 60%)');
+    hold off;
+
+end
+
+end
+
+
+function [fringe_order, fringe_labels, processed_image] = assign_fringe_order_v6(input_image, display_result)
+% ASSIGN_FRINGE_ORDER_V6_STRICT
+% Theo giả định lý tưởng:
+% 1. Root là vân lớn nhất/dài nhất bao trùm ảnh.
+% 2. Yêu cầu quét full 100% pixel của component mới được lan truyền tiếp.
+% 3. Lan truyền tích lũy (nhận proposal từ nhiều vân khác nhau).
+
+if nargin < 1, error('Thiếu input_image'); end
+if nargin < 2, display_result = true; end
+
+bw = logical(input_image);
+[H,W] = size(bw);
+processed_image = bw;
+
+cc = bwconncomp(bw,8);
+if cc.NumObjects == 0
+    fringe_order = 0;
+    fringe_labels = [];
+    return;
+end
+
+N = cc.NumObjects;
+L = labelmatrix(cc);
+stats = regionprops(cc,'PixelList', 'Area');
+
+%% 1. CHỌN ROOT LÀ VÂN LỚN NHẤT (Dài nhất/bao trùm nhất)
+areas = [stats.Area];
+[~, root_gid] = max(areas); 
+
+%% 2. KHỞI TẠO
+fringe_labels = nan(N,1);      
+fringe_labels(root_gid) = 1;
+
+% Dùng cell array để 1 pixel có thể nhận nhiều proposal từ các vân khác nhau (C và A cùng truyền cho B)
+proposal_map = cell(H,W); 
+root_pix = cc.PixelIdxList{root_gid};
+for p = 1:numel(root_pix)
+    proposal_map{root_pix(p)} = 1;
+end
+
+has_scanned = false(N,1); % Đánh dấu vân nào đã phát tia quét
+
+%% 3. BÒ LƯỚI KÉP (ITERATIVE SWEEP) VỚI ĐIỀU KIỆN 100%
+keep_looping = true;
+while keep_looping
+    keep_looping = false; % Sẽ bật lại nếu có vân mới được chốt
+    
+    % Tìm các vân ĐÃ CHỐT nhưng CHƯA QUÉT
+    active_sources = find(~isnan(fringe_labels) & ~has_scanned);
+    
+    for idx = 1:length(active_sources)
+        current_gid = active_sources(idx);
+        current_label = fringe_labels(current_gid);
+        pts = stats(current_gid).PixelList;
+        
+        % Phát tia quét dọc theo cột Y
+        for i = 1:size(pts,1)
+            c = pts(i,1); r = pts(i,2);
+            
+            % Quét lên
+            for y = r-1:-1:1
+                if bw(y,c)
+                    gid2 = L(y,c);
+                    if gid2 ~= current_gid
+                        proposal_map{y,c} = [proposal_map{y,c}, current_label + 1];
+                        break; % Vẫn giữ break để tuân thủ tính chất che khuất của quang học
+                    end
+                end
+            end
+            
+            % Quét xuống
+            for y = r+1:H
+                if bw(y,c)
+                    gid2 = L(y,c);
+                    if gid2 ~= current_gid
+                        proposal_map{y,c} = [proposal_map{y,c}, current_label - 1];
+                        break;
+                    end
+                end
+            end
+        end
+        has_scanned(current_gid) = true; % Đã quét xong
+    end
+    
+    % 4. KIỂM TRA ĐIỀU KIỆN 100% COVERAGE ĐỂ CHỐT VÂN MỚI
+    for gid = 1:N
+        if isnan(fringe_labels(gid))
+            pix = cc.PixelIdxList{gid};
+            
+            % Đếm số pixel đã nhận ít nhất 1 proposal
+            covered_pixels = 0;
+            all_proposals = [];
+            for p = 1:numel(pix)
+                if ~isempty(proposal_map{pix(p)})
+                    covered_pixels = covered_pixels + 1;
+                    all_proposals = [all_proposals, proposal_map{pix(p)}];
+                end
+            end
+            
+            % ĐIỀU KIỆN STRICT: Bắt buộc 100% pixel phải có data
+            if covered_pixels == numel(pix) 
+                fringe_labels(gid) = round(median(all_proposals));
+                keep_looping = true; % Có vân mới được chốt -> Kích hoạt vòng quét tiếp theo
+            end
+        end
+    end
+end
+
+%% 5. CHUẨN HÓA VÀ HIỂN THỊ
+missing = isnan(fringe_labels);
+if any(missing)
+    fringe_labels(missing) = 1; % Gán dự phòng nếu hệ thống bị đứng
+end
+
+fringe_labels = round(fringe_labels - min(fringe_labels) + 1);
+fringe_order = max(fringe_labels);
+
+if display_result
+    figure('Name','Strict Fringe Order V6','NumberTitle','off');
+    imshow(bw); hold on;
+    center = [W/2 , H/2];
+    for k = 1:N
+        pts = stats(k).PixelList;
+        d = hypot(pts(:,1)-center(1), pts(:,2)-center(2));
+        [~,id] = min(d);
+        text(pts(id,1), pts(id,2), num2str(fringe_labels(k)), ...
+            'Color','r', 'FontSize',11, 'FontWeight','bold', 'HorizontalAlignment','center');
+    end
+    title('Fringe Labels V6 (Strict 100% Coverage & Longest Root)');
+    hold off;
+end
 end
