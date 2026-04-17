@@ -3,7 +3,7 @@ clc; clear; close all;
 %% =========================================================================
 %  1. CẤU HÌNH THAM SỐ TỔNG (PARAMETERS CONFIGURATION)
 % =========================================================================
-cfg.defaultFolder = 'C:\Users\admin\Máy tính\sync_img_github\Sync_img\data_14_4_2026\mau2_30x\sau_lam_sach_Copy';
+cfg.defaultFolder = 'D:\tuan\sync_img_github\Sync_img\data_14_4_2026\mau2_30x\sau_lam_sach_Copy';
 % Tham số Tiền xử lý & Nhị phân
 cfg.gaussSigma       = 1;     % Độ làm mượt ảnh
 cfg.sensCoef         = 0.6;   % Hệ số nhạy adaptive threshold
@@ -153,17 +153,17 @@ for imgIdx = 1:numFiles
     % Tiến hành cắt ảnh
     BW = BW(yRec : yRec + heightRec - 1, xRec : xRec + widthRec - 1);
     
-    % Hiển thị vùng BW sau khi cắt
-    figure; 
-    imshow(BW, []); 
-    title(sprintf('BW sau khi cắt - File %d', imgIdx));
-    
+    % % Hiển thị vùng BW sau khi cắt
+    % figure; 
+    % imshow(BW, []); 
+    % title(sprintf('BW sau khi cắt - File %d', imgIdx));
+    % 
     BW = bwskel(BW, 'MinBranchLength', 20);
     
     % Áp dụng Offset cạnh
     BW = BW(cfg.cropOffset : end - cfg.cropOffset + 1, cfg.cropOffset : end - cfg.cropOffset + 1);
     hologram = hologram(yRec : yRec + heightRec - 1, xRec : xRec + widthRec - 1); % Cắt hologram trước
-    hologram = hologram(cfg.cropOffset : end - cfg.cropOffset + 1, cfg.cropOffset : end - cfg.cropOffset + 1);
+    % hologram = hologram(cfg.cropOffset : end - cfg.cropOffset + 1, cfg.cropOffset : end - cfg.cropOffset + 1);
     
     %% =========================================================================
     %  6. TÁI TẠO VÀ UNWRAP PHASE (PHASE RECONSTRUCTION)
